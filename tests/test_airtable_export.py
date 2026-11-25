@@ -4,6 +4,7 @@ import json
 import pathlib
 import pytest
 import sqlite_utils
+from urllib.parse import quote
 
 FORMATS = [
     (
@@ -196,6 +197,85 @@ def test_airtable_sqlite(mock_table, tmp_path):
             "airtable_createdTime": "2020-04-18T18:58:27.000Z",
         },
     ]
+
+
+def test_key_from_dotenv(httpx_mock, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("AIRTABLE_PAT=from-dotenv\n", encoding="utf-8")
+    httpx_mock.add_response(
+        url="https://api.airtable.com/v0/appZOGvNJPXCQ205F/tablename",
+        json={"records": []},
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [str(tmp_path / "out"), "appZOGvNJPXCQ205F", "tablename"],
+    )
+    assert result.exit_code == 0, result.output
+    assert httpx_mock.get_requests()[0].headers["authorization"] == "Bearer from-dotenv"
+
+
+def test_key_argument_overrides_dotenv(httpx_mock, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("AIRTABLE_PAT=from-dotenv\n", encoding="utf-8")
+    httpx_mock.add_response(
+        url="https://api.airtable.com/v0/appZOGvNJPXCQ205F/tablename",
+        json={"records": []},
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            str(tmp_path / "out"),
+            "appZOGvNJPXCQ205F",
+            "tablename",
+            "--key",
+            "from-arg",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert httpx_mock.get_requests()[0].headers["authorization"] == "Bearer from-arg"
+
+
+def test_missing_key(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [str(tmp_path), "appZOGvNJPXCQ205F", "tablename"],
+    )
+    assert result.exit_code != 0
+    assert "AIRTABLE_PAT" in result.output
+
+
+def test_table_name_with_colon(httpx_mock, tmp_path):
+    table = "Backlog: Теми за обществени съвети"
+    httpx_mock.add_response(
+        url="https://api.airtable.com/v0/appZOGvNJPXCQ205F/{}".format(
+            quote(table, safe="")
+        ),
+        json={
+            "records": [
+                {
+                    "id": "rec1",
+                    "fields": {"name": "Тема"},
+                    "createdTime": "2020-04-18T18:50:27.000Z",
+                }
+            ]
+        },
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [str(tmp_path), "appZOGvNJPXCQ205F", table, "--key", "x"],
+    )
+    assert result.exit_code == 0, result.output
+    exported = tmp_path / "Backlog_ Теми за обществени съвети.yml"
+    text = exported.read_text(encoding="utf-8")
+    assert "Тема" in text
+    assert "\\u" not in text
+    assert exported.stat().st_size > 0
+    assert not (tmp_path / "Backlog").exists()
 
 
 def test_airtable_export_error(httpx_mock, tmp_path):

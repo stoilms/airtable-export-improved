@@ -29,7 +29,11 @@ INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
     required=True,
 )
 @click.argument("tables", type=str, nargs=-1)
-@click.option("--key", envvar="AIRTABLE_KEY", help="Airtable API key", required=True)
+@click.option(
+    "--key",
+    envvar="AIRTABLE_KEY",
+    help="Airtable personal access token. Defaults to AIRTABLE_PAT in .env.",
+)
 @click.option(
     "--http-read-timeout",
     help="Timeout (in seconds) for network read operations",
@@ -55,7 +59,9 @@ INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
     is_flag=True,
     help="Download attachment and image files into a subfolder per table",
 )
+@click.pass_context
 def cli(
+    ctx,
     output_path,
     base_id,
     tables,
@@ -71,6 +77,14 @@ def cli(
     attachments,
 ):
     "Export Airtable data to YAML file on disk"
+    if ctx.get_parameter_source("key") != click.core.ParameterSource.COMMANDLINE:
+        dotenv_pat = read_dotenv_value(pathlib.Path.cwd() / ".env", "AIRTABLE_PAT")
+        if dotenv_pat:
+            key = dotenv_pat
+    if not key:
+        raise click.UsageError(
+            "Missing Airtable token. Pass --key or set AIRTABLE_PAT in .env."
+        )
     output = pathlib.Path(output_path)
     output.mkdir(parents=True, exist_ok=True)
     if not json and not ndjson and not yaml and not sqlite:
@@ -84,7 +98,9 @@ def cli(
     if not tables or schema:
         # Fetch all tables
         schema_data = list_tables(base_id, key, user_agent=user_agent)
-        dumped_schema = json_.dumps(schema_data, sort_keys=True, indent=4)
+        dumped_schema = json_.dumps(
+            schema_data, sort_keys=True, indent=4, ensure_ascii=False
+        )
         (output / "_schema.json").write_text(dumped_schema, "utf-8")
         if not tables:
             tables = [table["name"] for table in schema_data["tables"]]
@@ -137,7 +153,7 @@ def cli(
                         "Saved {} attachment{} to {}".format(
                             saved,
                             "" if saved == 1 else "s",
-                            output / table,
+                            output / filesystem_name(table),
                         ),
                         err=True,
                     )
@@ -147,6 +163,26 @@ def cli(
                 failed_downloads, "" if failed_downloads == 1 else "s"
             )
         )
+
+
+def read_dotenv_value(path, name):
+    "Return one value from a .env file, or None when the file or name is absent."
+    if not path.is_file():
+        return None
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key.strip() != name:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        return value or None
+    return None
 
 
 def list_tables(base_id, api_key, user_agent=None):
@@ -184,21 +220,30 @@ def all_records(base_id, table, api_key, http_read_timeout, sleep=0.2, user_agen
             time.sleep(sleep)
 
 
+def filesystem_name(name):
+    "Make a table or file name safe on Windows, where ':' opens an alternate stream."
+    cleaned = INVALID_FILENAME_CHARS.sub("_", name).strip(" .")
+    return cleaned or "_"
+
+
 def write_table_files(output, table, records, json, ndjson, yaml):
     filenames = []
+    stem = filesystem_name(table)
     if json:
-        filename = "{}.json".format(table)
-        dumped = json_.dumps(records, sort_keys=True, indent=4)
+        filename = "{}.json".format(stem)
+        dumped = json_.dumps(records, sort_keys=True, indent=4, ensure_ascii=False)
         (output / filename).write_text(dumped, "utf-8")
         filenames.append(output / filename)
     if ndjson:
-        filename = "{}.ndjson".format(table)
-        dumped = "\n".join(json_.dumps(r, sort_keys=True) for r in records)
+        filename = "{}.ndjson".format(stem)
+        dumped = "\n".join(
+            json_.dumps(r, sort_keys=True, ensure_ascii=False) for r in records
+        )
         (output / filename).write_text(dumped, "utf-8")
         filenames.append(output / filename)
     if yaml:
-        filename = "{}.yml".format(table)
-        dumped = yaml_.dump(records, sort_keys=True)
+        filename = "{}.yml".format(stem)
+        dumped = yaml_.dump(records, sort_keys=True, allow_unicode=True)
         (output / filename).write_text(dumped, "utf-8")
         filenames.append(output / filename)
     return filenames
@@ -245,7 +290,7 @@ def save_table_attachments(output, table, records, http_read_timeout, user_agent
     pending = list(iter_attachments(records))
     if not pending:
         return 0, 0
-    folder = output / table
+    folder = output / filesystem_name(table)
     folder.mkdir(parents=True, exist_ok=True)
     read_timeout = http_read_timeout or DEFAULT_ATTACHMENT_READ_TIMEOUT
     timeout = httpx.Timeout(5, read=read_timeout)

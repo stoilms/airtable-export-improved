@@ -28,7 +28,7 @@ You can export all of your data to a folder called `export/` by running the foll
 
 This example would files for each of your tables, for example: `export/table1.yml` and `export/table2.yml`.
 
-Rather than passing the API key using the `--key` option you can set it as an environment variable called `AIRTABLE_KEY`.
+Rather than passing the API key using the `--key` option you can set it as an environment variable called `AIRTABLE_KEY`. If you omit `--key`, the tool reads `AIRTABLE_PAT` from a `.env` file in the current directory. Copy `.env.example` to `.env` and paste your token there.
 
 To export only specified tables, pass their names as additional arguments:
 
