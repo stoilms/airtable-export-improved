@@ -31,6 +31,6 @@ setup(
         [console_scripts]
         airtable-export=airtable_export.cli:cli
     """,
-    install_requires=["click", "PyYAML", "httpx", "sqlite-utils"],
+    install_requires=["click", "PyYAML", "httpx", "sqlite-utils", "openpyxl"],
     extras_require={"test": ["pytest", "pytest-httpx"]},
 )

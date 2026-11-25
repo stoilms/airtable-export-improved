@@ -9,11 +9,14 @@ from urllib.parse import quote, urlencode
 import sqlite_utils
 import time
 import yaml as yaml_
+from openpyxl import Workbook
 
 # Attachment files can be several megabytes, so use a longer read timeout
 # than httpx's 5 second default when --http-read-timeout is not set.
 DEFAULT_ATTACHMENT_READ_TIMEOUT = 120
 INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+ILLEGAL_XLSX_CHARS = re.compile(r"[\000-\010\013\014\016-\037]")
+INVALID_SHEET_CHARS = re.compile(r"[\[\]:\\/?*]")
 
 
 @click.command()
@@ -45,6 +48,11 @@ INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 @click.option("--ndjson", is_flag=True, help="Newline delimited JSON format")
 @click.option("--yaml", is_flag=True, help="YAML format (default)")
 @click.option(
+    "--xlsx",
+    is_flag=True,
+    help="Excel .xlsx workbook with one sheet per table",
+)
+@click.option(
     "--sqlite",
     type=click.Path(file_okay=True, dir_okay=False, allow_dash=False),
     help="Export to this SQLite database",
@@ -72,6 +80,7 @@ def cli(
     json,
     ndjson,
     yaml,
+    xlsx,
     sqlite,
     schema,
     attachments,
@@ -87,7 +96,7 @@ def cli(
         )
     output = pathlib.Path(output_path)
     output.mkdir(parents=True, exist_ok=True)
-    if not json and not ndjson and not yaml and not sqlite:
+    if not json and not ndjson and not yaml and not sqlite and not xlsx:
         yaml = True
     write_batch = lambda table, batch: None
     if sqlite:
@@ -106,6 +115,7 @@ def cli(
             tables = [table["name"] for table in schema_data["tables"]]
 
     failed_downloads = 0
+    xlsx_tables = []
     for table in tables:
         records = []
         try:
@@ -127,7 +137,7 @@ def cli(
             raise click.ClickException(exc)
         write_batch(table, db_batch)
         filenames = write_table_files(output, table, records, json, ndjson, yaml)
-        if verbose:
+        if verbose and filenames:
             click.echo(
                 "Wrote {} record{} to {}".format(
                     len(records),
@@ -157,6 +167,23 @@ def cli(
                         ),
                         err=True,
                     )
+        if xlsx:
+            xlsx_tables.append((table, records))
+    if xlsx and xlsx_tables:
+        workbook_path = output / "{}.xlsx".format(base_id)
+        write_base_xlsx(workbook_path, xlsx_tables)
+        if verbose:
+            record_count = sum(len(rows) for _, rows in xlsx_tables)
+            click.echo(
+                "Wrote {} record{} from {} table{} to {}".format(
+                    record_count,
+                    "" if record_count == 1 else "s",
+                    len(xlsx_tables),
+                    "" if len(xlsx_tables) == 1 else "s",
+                    workbook_path,
+                ),
+                err=True,
+            )
     if failed_downloads:
         raise click.ClickException(
             "Failed to download {} attachment{}".format(
@@ -224,6 +251,73 @@ def filesystem_name(name):
     "Make a table or file name safe on Windows, where ':' opens an alternate stream."
     cleaned = INVALID_FILENAME_CHARS.sub("_", name).strip(" .")
     return cleaned or "_"
+
+
+def excel_cell(value):
+    if isinstance(value, str):
+        return ILLEGAL_XLSX_CHARS.sub("", value)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, list) and all(
+        item is None or isinstance(item, (bool, int, float, str)) for item in value
+    ):
+        return ", ".join("" if item is None else str(item) for item in value)
+    return ILLEGAL_XLSX_CHARS.sub(
+        "", json_.dumps(value, ensure_ascii=False, sort_keys=True)
+    )
+
+
+def excel_columns(records):
+    keys = set()
+    for record in records:
+        keys.update(record)
+    columns = ["airtable_id"] if "airtable_id" in keys else []
+    columns.extend(
+        sorted(key for key in keys if key not in ("airtable_id", "airtable_createdTime"))
+    )
+    if "airtable_createdTime" in keys:
+        columns.append("airtable_createdTime")
+    return columns
+
+
+def sheet_title(name):
+    title = INVALID_SHEET_CHARS.sub("_", filesystem_name(name))[:31].strip(" .")
+    return title or "Sheet"
+
+
+def unique_sheet_title(name, used):
+    base = sheet_title(name)
+    title = base
+    number = 2
+    while title in used:
+        suffix = "_{}".format(number)
+        title = (base[: 31 - len(suffix)] + suffix).strip(" .") or "Sheet"
+        number += 1
+    used.add(title)
+    return title
+
+
+def write_sheet(worksheet, table, records, used_titles):
+    worksheet.title = unique_sheet_title(table, used_titles)
+    columns = excel_columns(records)
+    if columns:
+        worksheet.append(columns)
+        for record in records:
+            worksheet.append([excel_cell(record.get(column)) for column in columns])
+
+
+def write_base_xlsx(path, tables):
+    workbook = Workbook()
+    used_titles = set()
+    first = True
+    for table, records in tables:
+        if first:
+            worksheet = workbook.active
+            first = False
+        else:
+            worksheet = workbook.create_sheet()
+        write_sheet(worksheet, table, records, used_titles)
+    workbook.save(path)
 
 
 def write_table_files(output, table, records, json, ndjson, yaml):
