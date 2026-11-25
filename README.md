@@ -28,7 +28,7 @@ You can export all of your data to a folder called `export/` by running the foll
 
 This example would files for each of your tables, for example: `export/table1.yml` and `export/table2.yml`.
 
-Rather than passing the API key using the `--key` option you can set it as an environment variable called `AIRTABLE_KEY`.
+Rather than passing the API key using the `--key` option you can set it as an environment variable called `AIRTABLE_KEY`. If you omit `--key`, the tool reads `AIRTABLE_PAT` from a `.env` file in the current directory. Copy `.env.example` to `.env` and paste your token there.
 
 To export only specified tables, pass their names as additional arguments:
 
@@ -49,6 +49,24 @@ You can pass multiple format options at once. This command will create a `.json`
 
 If you import all tables, or if you add the `--schema` option, a JSON schema for the base will be written to `output-dir/_schema.json`.
 
+### Attachments
+
+Airtable stores images in attachment fields. The download URLs for those files expire after about two hours, so pass `--attachments` to save the original files next to each table export:
+
+    airtable-export export base_id --key=key --attachments
+
+For a table called `People` this writes `export/People.yml` and a folder `export/People/`. Each file is named `{attachment id}-original-{filename}`, for example `export/People/attwPzAABrX7mUpdl-original-photo.jpg`. Characters that are not allowed in Windows filenames are replaced with `_`.
+
+The exported YAML, JSON, NDJSON, and SQLite keep the Airtable `url` and add `_saved` with that path relative to the output directory, using forward slashes:
+
+    _saved: People/attwPzAABrX7mUpdl-original-photo.jpg
+
+Files that are already on disk and match the attachment's byte size are not downloaded again. Thumbnail URLs are left unchanged.
+
+Attachment downloads do not send your API key. When `--http-read-timeout` is omitted, those downloads use a 120 second read timeout. If a download fails, the table is still written, `_saved` is omitted for that file, and the command exits with an error.
+
+With `--sqlite`, the database path is unchanged. Attachment files and `_saved` paths still use the output directory.
+
 ### SQLite database export
 
 You can export tables to a SQLite database file using the `--sqlite database.db` option:
@@ -56,7 +74,7 @@ You can export tables to a SQLite database file using the `--sqlite database.db`
     airtable-export export base_id \
         --key=key --sqlite database.db
 
-This can be combined with other format options. If you only specify `--sqlite` the export directory argument will be ignored.
+This can be combined with other format options. If you only specify `--sqlite` the export directory argument will be ignored, except with `--attachments`: attachment files are still saved there.
 
 The SQLite database will have a table created for each table you export. Those tables will have a primary key column called `airtable_id`.
 
@@ -103,18 +121,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Check out repo
-      uses: actions/checkout@v2
+      uses: actions/checkout@v7
     - name: Set up Python
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v7
       with:
-        python-version: 3.8
-    - uses: actions/cache@v2
-      name: Configure pip caching
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-
-        restore-keys: |
-          ${{ runner.os }}-pip-
+        python-version: "3.13"
     - name: Install airtable-export
       run: |
         pip install airtable-export
