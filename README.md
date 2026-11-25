@@ -121,18 +121,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Check out repo
-      uses: actions/checkout@v2
+      uses: actions/checkout@v7
     - name: Set up Python
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v7
       with:
-        python-version: 3.8
-    - uses: actions/cache@v2
-      name: Configure pip caching
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-
-        restore-keys: |
-          ${{ runner.os }}-pip-
+        python-version: "3.13"
     - name: Install airtable-export
       run: |
         pip install airtable-export
