@@ -14,24 +14,35 @@ from openpyxl import Workbook
 # Attachment files can be several megabytes, so use a longer read timeout
 # than httpx's 5 second default when --http-read-timeout is not set.
 DEFAULT_ATTACHMENT_READ_TIMEOUT = 120
+VALID_FORMATS = ("yaml", "json", "ndjson", "xlsx", "sqlite")
 INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 ILLEGAL_XLSX_CHARS = re.compile(r"[\000-\010\013\014\016-\037]")
 INVALID_SHEET_CHARS = re.compile(r"[\[\]:\\/?*]")
 
 
+def split_csv(value):
+    if not value:
+        return []
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
 @click.command()
 @click.version_option()
-@click.argument(
-    "output_path",
-    type=click.Path(file_okay=False, dir_okay=True, allow_dash=False),
+@click.option(
+    "--bases",
     required=True,
+    help="Comma-separated Airtable base IDs (app...)",
 )
-@click.argument(
-    "base_id",
-    type=str,
+@click.option(
+    "--formats",
     required=True,
+    help="Comma-separated formats: yaml, json, ndjson, xlsx, sqlite",
 )
-@click.argument("tables", type=str, nargs=-1)
+@click.option(
+    "--tables",
+    "table_names",
+    help="Comma-separated table names for a single base. Omit to export every table.",
+)
 @click.option(
     "--key",
     envvar="AIRTABLE_KEY",
@@ -42,25 +53,12 @@ INVALID_SHEET_CHARS = re.compile(r"[\[\]:\\/?*]")
     help="Timeout (in seconds) for network read operations",
     type=int,
 )
-@click.option("--user-agent", help="User agent to use for requests")
+@click.option("--useragent", help="User agent to use for requests")
 @click.option("-v", "--verbose", is_flag=True, help="Verbose output")
-@click.option("--json", is_flag=True, help="JSON format")
-@click.option("--ndjson", is_flag=True, help="Newline delimited JSON format")
-@click.option("--yaml", is_flag=True, help="YAML format (default)")
-@click.option(
-    "--xlsx",
-    is_flag=True,
-    help="Excel .xlsx workbook with one sheet per table",
-)
-@click.option(
-    "--sqlite",
-    type=click.Path(file_okay=True, dir_okay=False, allow_dash=False),
-    help="Export to this SQLite database",
-)
 @click.option(
     "--schema",
     is_flag=True,
-    help="Save Airtable schema to output_path/_schema.json",
+    help="Save Airtable schema to {base id}/_schema.json",
 )
 @click.option(
     "--attachments",
@@ -70,22 +68,17 @@ INVALID_SHEET_CHARS = re.compile(r"[\[\]:\\/?*]")
 @click.pass_context
 def cli(
     ctx,
-    output_path,
-    base_id,
-    tables,
+    bases,
+    formats,
+    table_names,
     key,
     http_read_timeout,
-    user_agent,
+    useragent,
     verbose,
-    json,
-    ndjson,
-    yaml,
-    xlsx,
-    sqlite,
     schema,
     attachments,
 ):
-    "Export Airtable data to YAML file on disk"
+    "Export Airtable bases into folders named with each base ID"
     if ctx.get_parameter_source("key") != click.core.ParameterSource.COMMANDLINE:
         dotenv_pat = read_dotenv_value(pathlib.Path.cwd() / ".env", "AIRTABLE_PAT")
         if dotenv_pat:
@@ -94,10 +87,78 @@ def cli(
         raise click.UsageError(
             "Missing Airtable token. Pass --key or set AIRTABLE_PAT in .env."
         )
-    output = pathlib.Path(output_path)
+    chosen = split_csv(formats)
+    unknown = [name for name in chosen if name not in VALID_FORMATS]
+    if unknown or not chosen:
+        raise click.UsageError(
+            "--formats must be a comma-separated list of: {}.".format(
+                ", ".join(VALID_FORMATS)
+            )
+        )
+    json = "json" in chosen
+    ndjson = "ndjson" in chosen
+    yaml = "yaml" in chosen
+    xlsx = "xlsx" in chosen
+    base_ids = split_csv(bases)
+    if not base_ids:
+        raise click.UsageError("--bases requires one or more Airtable base IDs.")
+    requested_tables = split_csv(table_names)
+    if len(base_ids) > 1 and requested_tables:
+        raise click.UsageError(
+            "--tables cannot be used with more than one base. "
+            "Omit --tables to export every table in each base."
+        )
+    user_agent = useragent
+    failed_downloads = 0
+    several = len(base_ids) > 1
+    for number, base_id in enumerate(base_ids, start=1):
+        if several:
+            click.echo(
+                "[{}/{}] base {}".format(number, len(base_ids), base_id),
+                err=True,
+            )
+        failed_downloads += export_base(
+            base_id,
+            requested_tables,
+            key,
+            http_read_timeout,
+            user_agent,
+            schema,
+            attachments,
+            json,
+            ndjson,
+            yaml,
+            xlsx,
+            "sqlite" in chosen,
+        )
+    if failed_downloads:
+        raise click.ClickException(
+            "Failed to download {} attachment{}".format(
+                failed_downloads, "" if failed_downloads == 1 else "s"
+            )
+        )
+
+
+def export_base(
+    base_id,
+    requested_tables,
+    key,
+    http_read_timeout,
+    user_agent,
+    schema,
+    attachments,
+    json,
+    ndjson,
+    yaml,
+    xlsx,
+    use_sqlite,
+):
+    "Export one base into a folder named with its base ID. Returns failed downloads."
+    tables = list(requested_tables)
+    output_name = filesystem_name(base_id)
+    output = pathlib.Path.cwd() / output_name
     output.mkdir(parents=True, exist_ok=True)
-    if not json and not ndjson and not yaml and not sqlite and not xlsx:
-        yaml = True
+    sqlite = output / "{}.db".format(output_name) if use_sqlite else None
     sqlite_state = {"announced": False}
 
     def write_batch(table, batch):
@@ -105,7 +166,9 @@ def cli(
             return
         if batch and not sqlite_state["announced"]:
             click.echo(
-                "[{}/{}] {} - writing to {}".format(index, total, table, sqlite),
+                "[{}/{}] {} - writing to {}".format(
+                    index, total, table, relative_path(sqlite)
+                ),
                 err=True,
             )
             sqlite_state["announced"] = True
@@ -151,9 +214,9 @@ def cli(
             raise click.ClickException(exc)
         write_batch(table, db_batch)
         filenames = write_table_files(output, table, records, json, ndjson, yaml)
-        destinations = [str(filename) for filename in filenames]
+        destinations = [relative_path(filename) for filename in filenames]
         if sqlite:
-            destinations.append(str(sqlite))
+            destinations.append(relative_path(sqlite))
         line = "[{}/{}] {} - {}".format(
             index, total, table, count_label(len(records), "record")
         )
@@ -201,7 +264,7 @@ def cli(
                                 total,
                                 table,
                                 count_label(len(records), "record"),
-                                sqlite,
+                                relative_path(sqlite),
                             ),
                             err=True,
                         )
@@ -215,27 +278,26 @@ def cli(
         if xlsx:
             xlsx_tables.append((table, records))
     if xlsx and xlsx_tables:
-        workbook_path = output / "{}.xlsx".format(base_id)
+        workbook_path = output / "{}.xlsx".format(output_name)
         write_base_xlsx(workbook_path, xlsx_tables)
         record_count = sum(len(rows) for _, rows in xlsx_tables)
         click.echo(
             "{} - {}, {}".format(
-                workbook_path,
+                relative_path(workbook_path),
                 count_label(len(xlsx_tables), "table"),
                 count_label(record_count, "record"),
             ),
             err=True,
         )
-    if failed_downloads:
-        raise click.ClickException(
-            "Failed to download {} attachment{}".format(
-                failed_downloads, "" if failed_downloads == 1 else "s"
-            )
-        )
+    return failed_downloads
 
 
 def count_label(count, singular):
     return "{} {}{}".format(count, singular, "" if count == 1 else "s")
+
+
+def relative_path(path):
+    return str(pathlib.Path(path).relative_to(pathlib.Path.cwd()))
 
 
 def read_dotenv_value(path, name):

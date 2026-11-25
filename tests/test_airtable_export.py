@@ -66,6 +66,31 @@ FORMATS = [
 ]
 
 
+BASE_ID = "appZOGvNJPXCQ205F"
+
+
+def exported(tmp_path, *parts):
+    return tmp_path.joinpath(BASE_ID, *parts)
+
+
+def shown(*parts):
+    return str(pathlib.Path(BASE_ID, *parts))
+
+
+def invoke(tmp_path, monkeypatch, args, **kwargs):
+    monkeypatch.chdir(tmp_path)
+    return CliRunner().invoke(cli.cli, args, **kwargs)
+
+
+def command(formats, table=None, key="x", bases=None):
+    args = ["--bases", bases or BASE_ID, "--formats", formats]
+    if table is not None:
+        args.extend(["--tables", table])
+    if key is not None:
+        args.extend(["--key", key])
+    return args
+
+
 def test_version():
     runner = CliRunner()
     result = runner.invoke(cli.cli, ["--version"])
@@ -91,46 +116,38 @@ def mock_table_list(httpx_mock):
 
 @pytest.mark.parametrize("format,expected", FORMATS)
 @pytest.mark.parametrize(
-    "extra_arguments", [["tablename"], [], ["tablename", "--schema"]]
+    "extra_arguments",
+    [["--tables", "tablename"], [], ["--tables", "tablename", "--schema"]],
 )
 def test_airtable_export(
-    mock_table, httpx_mock, format, expected, extra_arguments, tmp_path
+    mock_table, httpx_mock, format, expected, extra_arguments, tmp_path, monkeypatch
 ):
     if not extra_arguments or "--schema" in extra_arguments:
         httpx_mock.add_response(
             url="https://api.airtable.com/v0/meta/bases/appZOGvNJPXCQ205F/tables",
             json={"tables": [{"id": "tbl123", "name": "tablename"}]},
         )
-    runner = CliRunner()
-    table_file = tmp_path / "tablename.{}".format("yml" if format == "yaml" else format)
-    args = (
-        [
-            str(tmp_path),
-            "appZOGvNJPXCQ205F",
-        ]
-        + extra_arguments
-        + [
-            "-v",
-            "--key",
-            "x",
-            "--{}".format(format),
-        ]
+    table_file = exported(
+        tmp_path, "tablename.{}".format("yml" if format == "yaml" else format)
     )
-    result = runner.invoke(
-        cli.cli,
-        args,
+    result = invoke(
+        tmp_path,
+        monkeypatch,
+        command(format, key="x") + extra_arguments + ["-v"],
     )
     assert 0 == result.exit_code, result.output
     assert result.output.strip() == "\n".join(
         [
             "Exporting 1 table",
             "[1/1] tablename ...",
-            "[1/1] tablename - 2 records -> {}".format(table_file),
+            "[1/1] tablename - 2 records -> {}".format(
+                shown("tablename.{}".format("yml" if format == "yaml" else format))
+            ),
         ]
     )
     actual = table_file.read_text(encoding="utf-8")
     assert expected.strip() == actual.strip()
-    schema = tmp_path / "_schema.json"
+    schema = exported(tmp_path, "_schema.json")
     if not extra_arguments or "--schema" in extra_arguments:
         assert schema.exists()
         assert schema.read_text(encoding="utf-8")[0] == "{"
@@ -138,26 +155,15 @@ def test_airtable_export(
         assert not schema.exists()
 
 
-def test_all_three_formats_at_once(mock_table, tmp_path):
-    runner = CliRunner()
-    args = [
-        str(tmp_path),
-        "appZOGvNJPXCQ205F",
-        "tablename",
-        "-v",
-        "--key",
-        "x",
-        "--yaml",
-        "--json",
-        "--ndjson",
-    ]
-    result = runner.invoke(
-        cli.cli,
-        args,
+def test_all_three_formats_at_once(mock_table, tmp_path, monkeypatch):
+    result = invoke(
+        tmp_path,
+        monkeypatch,
+        command("json,ndjson,yaml", table="tablename") + ["-v"],
     )
     assert 0 == result.exit_code, result.output
     written = ", ".join(
-        str(tmp_path / name)
+        shown(name)
         for name in ("tablename.json", "tablename.ndjson", "tablename.yml")
     )
     assert result.output.strip() == "\n".join(
@@ -168,8 +174,8 @@ def test_all_three_formats_at_once(mock_table, tmp_path):
         ]
     )
     for format, expected in FORMATS:
-        actual = (
-            tmp_path / "tablename.{}".format("yml" if format == "yaml" else format)
+        actual = exported(
+            tmp_path, "tablename.{}".format("yml" if format == "yaml" else format)
         ).read_text(encoding="utf-8")
         assert expected.strip() == actual.strip()
 
@@ -182,31 +188,23 @@ def workbook_sheets(path):
     }
 
 
-def test_xlsx_export(mock_table, tmp_path):
-    runner = CliRunner()
-    result = runner.invoke(
-        cli.cli,
-        [
-            str(tmp_path),
-            "appZOGvNJPXCQ205F",
-            "tablename",
-            "--key",
-            "x",
-            "--xlsx",
-            "-v",
-        ],
+def test_xlsx_export(mock_table, tmp_path, monkeypatch):
+    result = invoke(
+        tmp_path,
+        monkeypatch,
+        command("xlsx", table="tablename") + ["-v"],
     )
     assert result.exit_code == 0, result.output
-    workbook_path = tmp_path / "appZOGvNJPXCQ205F.xlsx"
+    workbook_path = exported(tmp_path, "appZOGvNJPXCQ205F.xlsx")
     assert result.output.strip() == "\n".join(
         [
             "Exporting 1 table",
             "[1/1] tablename ...",
             "[1/1] tablename - 2 records",
-            "{} - 1 table, 2 records".format(workbook_path),
+            "{} - 1 table, 2 records".format(shown("appZOGvNJPXCQ205F.xlsx")),
         ]
     )
-    assert not (tmp_path / "tablename.yml").exists()
+    assert not exported(tmp_path, "tablename.yml").exists()
     sheets = workbook_sheets(workbook_path)
     assert list(sheets) == ["tablename"]
     rows = sheets["tablename"]
@@ -223,7 +221,7 @@ def test_xlsx_export(mock_table, tmp_path):
     assert by_id["rec2"]["true_or_false"] is False
 
 
-def test_xlsx_plain_lists_and_cyrillic(httpx_mock, tmp_path):
+def test_xlsx_plain_lists_and_cyrillic(httpx_mock, tmp_path, monkeypatch):
     table = "Backlog: Теми"
     httpx_mock.add_response(
         url="https://api.airtable.com/v0/appZOGvNJPXCQ205F/{}".format(
@@ -249,13 +247,9 @@ def test_xlsx_plain_lists_and_cyrillic(httpx_mock, tmp_path):
             ]
         },
     )
-    runner = CliRunner()
-    result = runner.invoke(
-        cli.cli,
-        [str(tmp_path), "appZOGvNJPXCQ205F", table, "--key", "x", "--xlsx"],
-    )
+    result = invoke(tmp_path, monkeypatch, command("xlsx", table=table))
     assert result.exit_code == 0, result.output
-    sheets = workbook_sheets(tmp_path / "appZOGvNJPXCQ205F.xlsx")
+    sheets = workbook_sheets(exported(tmp_path, "appZOGvNJPXCQ205F.xlsx"))
     assert list(sheets) == ["Backlog_ Теми"]
     rows = sheets["Backlog_ Теми"]
     record = dict(zip(rows[0], rows[1]))
@@ -265,7 +259,7 @@ def test_xlsx_plain_lists_and_cyrillic(httpx_mock, tmp_path):
     assert photos[0]["filename"] == "снимка.jpg"
 
 
-def test_xlsx_one_workbook_for_the_base(httpx_mock, tmp_path):
+def test_xlsx_one_workbook_for_the_base(httpx_mock, tmp_path, monkeypatch):
     long_name = "A" * 31
     httpx_mock.add_response(
         url="https://api.airtable.com/v0/appZOGvNJPXCQ205F/People",
@@ -291,50 +285,33 @@ def test_xlsx_one_workbook_for_the_base(httpx_mock, tmp_path):
         ),
         json={"records": []},
     )
-    runner = CliRunner()
-    result = runner.invoke(
-        cli.cli,
-        [
-            str(tmp_path),
-            "appZOGvNJPXCQ205F",
-            "People",
-            long_name + "1",
-            long_name + "2",
-            "--key",
-            "x",
-            "--xlsx",
-            "-v",
-        ],
+    result = invoke(
+        tmp_path,
+        monkeypatch,
+        command("xlsx", table="{},{},{}".format("People", long_name + "1", long_name + "2"))
+        + ["-v"],
     )
     assert result.exit_code == 0, result.output
-    workbook_path = tmp_path / "appZOGvNJPXCQ205F.xlsx"
+    workbook_path = exported(tmp_path, "appZOGvNJPXCQ205F.xlsx")
     assert workbook_path.exists()
-    assert not (tmp_path / "People.xlsx").exists()
+    assert not exported(tmp_path, "People.xlsx").exists()
     sheets = workbook_sheets(workbook_path)
     assert list(sheets) == ["People", "A" * 31, ("A" * 29) + "_2"]
     assert sheets["People"][1][sheets["People"][0].index("Name")] == "Ada"
     assert "[1/3] People - 1 record" in result.output
-    assert "{} - 3 tables, 1 record".format(workbook_path) in result.output
+    assert "{} - 3 tables, 1 record".format(shown("appZOGvNJPXCQ205F.xlsx")) in result.output
 
 
-def test_xlsx_includes_saved_attachment_path(httpx_mock, tmp_path):
+def test_xlsx_includes_saved_attachment_path(httpx_mock, tmp_path, monkeypatch):
     add_table(httpx_mock, records_with_attachments())
     add_files(httpx_mock)
-    runner = CliRunner()
-    result = runner.invoke(
-        cli.cli,
-        [
-            str(tmp_path),
-            "appZOGvNJPXCQ205F",
-            "tablename",
-            "--key",
-            "x",
-            "--xlsx",
-            "--attachments",
-        ],
+    result = invoke(
+        tmp_path,
+        monkeypatch,
+        command("xlsx", table="tablename") + ["--attachments"],
     )
     assert result.exit_code == 0, result.output
-    sheets = workbook_sheets(tmp_path / "appZOGvNJPXCQ205F.xlsx")
+    sheets = workbook_sheets(exported(tmp_path, "appZOGvNJPXCQ205F.xlsx"))
     rows = sheets["tablename"]
     record = dict(zip(rows[0], rows[1]))
     photos = json.loads(record["Photos"])
@@ -343,26 +320,21 @@ def test_xlsx_includes_saved_attachment_path(httpx_mock, tmp_path):
     )
 
 
-def test_airtable_sqlite(mock_table, tmp_path):
-    runner = CliRunner()
-    db_path = tmp_path / "test.db"
-    args = [
-        str(tmp_path),
-        "appZOGvNJPXCQ205F",
-        "tablename",
-        "--key",
-        "x",
-        "--sqlite",
-        str(db_path),
-    ]
-    result = runner.invoke(cli.cli, args, catch_exceptions=False)
+def test_airtable_sqlite(mock_table, tmp_path, monkeypatch):
+    db_path = exported(tmp_path, "{}.db".format(BASE_ID))
+    result = invoke(
+        tmp_path,
+        monkeypatch,
+        command("sqlite", table="tablename"),
+        catch_exceptions=False,
+    )
     assert 0 == result.exit_code, result.output
     assert result.output.strip() == "\n".join(
         [
             "Exporting 1 table",
             "[1/1] tablename ...",
-            "[1/1] tablename - writing to {}".format(db_path),
-            "[1/1] tablename - 2 records -> {}".format(db_path),
+            "[1/1] tablename - writing to {}".format(shown("{}.db".format(BASE_ID))),
+            "[1/1] tablename - 2 records -> {}".format(shown("{}.db".format(BASE_ID))),
         ]
     )
     db = sqlite_utils.Database(db_path)
@@ -396,10 +368,10 @@ def test_key_from_dotenv(httpx_mock, tmp_path, monkeypatch):
         url="https://api.airtable.com/v0/appZOGvNJPXCQ205F/tablename",
         json={"records": []},
     )
-    runner = CliRunner()
-    result = runner.invoke(
-        cli.cli,
-        [str(tmp_path / "out"), "appZOGvNJPXCQ205F", "tablename"],
+    result = invoke(
+        tmp_path,
+        monkeypatch,
+        command("yaml", table="tablename", key=None),
     )
     assert result.exit_code == 0, result.output
     assert httpx_mock.get_requests()[0].headers["authorization"] == "Bearer from-dotenv"
@@ -412,33 +384,100 @@ def test_key_argument_overrides_dotenv(httpx_mock, tmp_path, monkeypatch):
         url="https://api.airtable.com/v0/appZOGvNJPXCQ205F/tablename",
         json={"records": []},
     )
-    runner = CliRunner()
-    result = runner.invoke(
-        cli.cli,
-        [
-            str(tmp_path / "out"),
-            "appZOGvNJPXCQ205F",
-            "tablename",
-            "--key",
-            "from-arg",
-        ],
+    result = invoke(
+        tmp_path,
+        monkeypatch,
+        command("yaml", table="tablename", key="from-arg"),
     )
     assert result.exit_code == 0, result.output
     assert httpx_mock.get_requests()[0].headers["authorization"] == "Bearer from-arg"
 
 
 def test_missing_key(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    runner = CliRunner()
-    result = runner.invoke(
-        cli.cli,
-        [str(tmp_path), "appZOGvNJPXCQ205F", "tablename"],
+    result = invoke(
+        tmp_path,
+        monkeypatch,
+        command("yaml", table="tablename", key=None),
     )
     assert result.exit_code != 0
     assert "AIRTABLE_PAT" in result.output
 
 
-def test_table_name_with_colon(httpx_mock, tmp_path):
+def test_formats_are_required(tmp_path, monkeypatch):
+    result = invoke(
+        tmp_path,
+        monkeypatch,
+        ["--bases", BASE_ID, "--key", "x", "--tables", "tablename"],
+    )
+    assert result.exit_code != 0
+    assert "--formats" in result.output
+
+
+def test_unknown_format_is_rejected(tmp_path, monkeypatch):
+    result = invoke(
+        tmp_path,
+        monkeypatch,
+        command("csv", table="tablename"),
+    )
+    assert result.exit_code != 0
+    assert "yaml, json, ndjson, xlsx, sqlite" in result.output
+
+
+def test_exports_each_listed_base(httpx_mock, tmp_path, monkeypatch):
+    second = "appSecondBaseId0001"
+    for base in (BASE_ID, second):
+        httpx_mock.add_response(
+            url="https://api.airtable.com/v0/meta/bases/{}/tables".format(base),
+            json={"tables": [{"id": "tbl1", "name": "tablename"}]},
+        )
+        httpx_mock.add_response(
+            url="https://api.airtable.com/v0/{}/tablename".format(base),
+            json={"records": []},
+        )
+    result = invoke(
+        tmp_path,
+        monkeypatch,
+        command("yaml", bases="{}, {}".format(BASE_ID, second)),
+    )
+    assert result.exit_code == 0, result.output
+    assert exported(tmp_path, "tablename.yml").is_file()
+    assert (tmp_path / second / "tablename.yml").is_file()
+    first_line = result.output.index("[1/2] base {}".format(BASE_ID))
+    second_line = result.output.index("[2/2] base {}".format(second))
+    assert first_line < second_line
+    assert result.output.count("[1/1] tablename - 0 records ->") == 2
+
+
+def test_tables_rejected_when_several_bases(tmp_path, monkeypatch):
+    second = "appSecondBaseId0001"
+    result = invoke(
+        tmp_path,
+        monkeypatch,
+        command(
+            "yaml",
+            table="tablename",
+            bases="{},{}".format(BASE_ID, second),
+        ),
+    )
+    assert result.exit_code != 0
+    assert "--tables cannot be used with more than one base" in result.output
+    assert not exported(tmp_path, "tablename.yml").exists()
+    assert not (tmp_path / second).exists()
+
+
+def test_useragent_is_sent(mock_table, tmp_path, monkeypatch, httpx_mock):
+    result = invoke(
+        tmp_path,
+        monkeypatch,
+        command("yaml", table="tablename") + ["--useragent", "Airtable Export Robot"],
+    )
+    assert result.exit_code == 0, result.output
+    assert (
+        httpx_mock.get_requests()[0].headers["user-agent"] == "Airtable Export Robot"
+    )
+
+
+def test_table_name_with_colon(httpx_mock, tmp_path, monkeypatch):
     table = "Backlog: Теми за обществени съвети"
     httpx_mock.add_response(
         url="https://api.airtable.com/v0/appZOGvNJPXCQ205F/{}".format(
@@ -454,26 +493,22 @@ def test_table_name_with_colon(httpx_mock, tmp_path):
             ]
         },
     )
-    runner = CliRunner()
-    result = runner.invoke(
-        cli.cli,
-        [str(tmp_path), "appZOGvNJPXCQ205F", table, "--key", "x"],
-    )
+    result = invoke(tmp_path, monkeypatch, command("yaml", table=table))
     assert result.exit_code == 0, result.output
-    exported = tmp_path / "Backlog_ Теми за обществени съвети.yml"
-    text = exported.read_text(encoding="utf-8")
+    table_file = exported(tmp_path, "Backlog_ Теми за обществени съвети.yml")
+    text = table_file.read_text(encoding="utf-8")
     assert "Тема" in text
     assert "\\u" not in text
-    assert exported.stat().st_size > 0
-    assert not (tmp_path / "Backlog").exists()
+    assert table_file.stat().st_size > 0
+    assert not exported(tmp_path, "Backlog").exists()
 
 
-def test_airtable_export_error(httpx_mock, tmp_path):
+def test_airtable_export_error(httpx_mock, tmp_path, monkeypatch):
     httpx_mock.add_response(status_code=401)
-    runner = CliRunner()
-    result = runner.invoke(
-        cli.cli,
-        [str(tmp_path), "appZOGvNJPXCQ205F", "tablename", "-v", "--key", "x"],
+    result = invoke(
+        tmp_path,
+        monkeypatch,
+        command("yaml", table="tablename") + ["-v"],
     )
     assert result.exit_code == 1
     assert "401 Unauthorized" in result.output
@@ -540,30 +575,21 @@ def saved_name(attachment_id, filename):
 
 
 @pytest.mark.parametrize("format", ["yaml", "json", "ndjson"])
-def test_attachments_saved_next_to_table(httpx_mock, format, tmp_path):
+def test_attachments_saved_next_to_table(httpx_mock, format, tmp_path, monkeypatch):
     add_table(httpx_mock, records_with_attachments())
     add_files(httpx_mock)
-    runner = CliRunner()
-    result = runner.invoke(
-        cli.cli,
-        [
-            str(tmp_path),
-            "appZOGvNJPXCQ205F",
-            "tablename",
-            "--key",
-            "x",
-            "--{}".format(format),
-            "--attachments",
-            "-v",
-        ],
+    result = invoke(
+        tmp_path,
+        monkeypatch,
+        command(format, table="tablename") + ["--attachments", "-v"],
     )
     assert result.exit_code == 0, result.output
-    photo = tmp_path / "tablename" / saved_name(PHOTO_ID, "photo.jpg")
-    pdf = tmp_path / "tablename" / saved_name(PDF_ID, "ardata.pdf")
+    photo = exported(tmp_path, "tablename", saved_name(PHOTO_ID, "photo.jpg"))
+    pdf = exported(tmp_path, "tablename", saved_name(PDF_ID, "ardata.pdf"))
     assert photo.read_bytes() == PHOTO_BYTES
     assert pdf.read_bytes() == PDF_BYTES
-    text = (
-        tmp_path / "tablename.{}".format("yml" if format == "yaml" else format)
+    text = exported(
+        tmp_path, "tablename.{}".format("yml" if format == "yaml" else format)
     ).read_text(encoding="utf-8")
     assert "tablename/{}".format(saved_name(PHOTO_ID, "photo.jpg")) in text
     assert "tablename/{}".format(saved_name(PDF_ID, "ardata.pdf")) in text
@@ -580,35 +606,27 @@ def test_attachments_saved_next_to_table(httpx_mock, format, tmp_path):
             assert "authorization" not in request.headers
 
 
-def test_attachments_sqlite(httpx_mock, tmp_path):
+def test_attachments_sqlite(httpx_mock, tmp_path, monkeypatch):
     add_table(httpx_mock, records_with_attachments())
     add_files(httpx_mock)
-    runner = CliRunner()
-    db_path = tmp_path / "test.db"
-    result = runner.invoke(
-        cli.cli,
-        [
-            str(tmp_path),
-            "appZOGvNJPXCQ205F",
-            "tablename",
-            "--key",
-            "x",
-            "--sqlite",
-            str(db_path),
-            "--attachments",
-        ],
+    db_path = exported(tmp_path, "{}.db".format(BASE_ID))
+    result = invoke(
+        tmp_path,
+        monkeypatch,
+        command("sqlite", table="tablename") + ["--attachments"],
     )
     assert result.exit_code == 0, result.output
+    db_shown = shown("{}.db".format(BASE_ID))
     record_line = result.output.index(
-        "[1/1] tablename - 1 record -> {}".format(db_path)
+        "[1/1] tablename - 1 record -> {}".format(db_shown)
     )
     download_line = result.output.index("[1/1] tablename - downloading 2 attachments")
     rewrite_line = result.output.index(
-        "[1/1] tablename - writing 1 record to {}".format(db_path)
+        "[1/1] tablename - writing 1 record to {}".format(db_shown)
     )
-    assert result.output.index("[1/1] tablename - writing to {}".format(db_path)) < record_line
+    assert result.output.index("[1/1] tablename - writing to {}".format(db_shown)) < record_line
     assert record_line < download_line < rewrite_line
-    photo = tmp_path / "tablename" / saved_name(PHOTO_ID, "photo.jpg")
+    photo = exported(tmp_path, "tablename", saved_name(PHOTO_ID, "photo.jpg"))
     assert photo.read_bytes() == PHOTO_BYTES
     db = sqlite_utils.Database(db_path)
     photos = list(db["tablename"].rows)[0]["Photos"]
@@ -626,22 +644,14 @@ def test_attachments_sqlite(httpx_mock, tmp_path):
     )
 
 
-def test_attachments_skip_existing_file(httpx_mock, tmp_path):
+def test_attachments_skip_existing_file(httpx_mock, tmp_path, monkeypatch):
     add_table(httpx_mock, records_with_attachments())
     add_files(httpx_mock)
-    runner = CliRunner()
-    args = [
-        str(tmp_path),
-        "appZOGvNJPXCQ205F",
-        "tablename",
-        "--key",
-        "x",
-        "--attachments",
-    ]
-    first = runner.invoke(cli.cli, args)
+    args = command("yaml", table="tablename") + ["--attachments"]
+    first = invoke(tmp_path, monkeypatch, args)
     assert first.exit_code == 0, first.output
     add_table(httpx_mock, records_with_attachments())
-    second = runner.invoke(cli.cli, args)
+    second = invoke(tmp_path, monkeypatch, args)
     assert second.exit_code == 0, second.output
     photo_hits = [
         request
@@ -653,11 +663,11 @@ def test_attachments_skip_existing_file(httpx_mock, tmp_path):
     ]
     assert len(photo_hits) == 1
     assert len(pdf_hits) == 1
-    text = (tmp_path / "tablename.yml").read_text(encoding="utf-8")
+    text = exported(tmp_path, "tablename.yml").read_text(encoding="utf-8")
     assert "tablename/{}".format(saved_name(PHOTO_ID, "photo.jpg")) in text
 
 
-def test_attachments_sanitize_filename(httpx_mock, tmp_path):
+def test_attachments_sanitize_filename(httpx_mock, tmp_path, monkeypatch):
     payload = {
         "records": [
             {
@@ -679,45 +689,31 @@ def test_attachments_sanitize_filename(httpx_mock, tmp_path):
     }
     add_table(httpx_mock, payload)
     httpx_mock.add_response(url=PDF_URL, content=PDF_BYTES)
-    runner = CliRunner()
-    result = runner.invoke(
-        cli.cli,
-        [
-            str(tmp_path),
-            "appZOGvNJPXCQ205F",
-            "tablename",
-            "--key",
-            "x",
-            "--attachments",
-        ],
+    result = invoke(
+        tmp_path,
+        monkeypatch,
+        command("yaml", table="tablename") + ["--attachments"],
     )
     assert result.exit_code == 0, result.output
     expected = saved_name(PDF_ID, "q1_report_final.pdf")
-    assert (tmp_path / "tablename" / expected).read_bytes() == PDF_BYTES
-    text = (tmp_path / "tablename.yml").read_text(encoding="utf-8")
+    assert exported(tmp_path, "tablename", expected).read_bytes() == PDF_BYTES
+    text = exported(tmp_path, "tablename.yml").read_text(encoding="utf-8")
     assert "tablename/{}".format(expected) in text
 
 
-def test_attachments_download_failure_still_writes_table(httpx_mock, tmp_path):
+def test_attachments_download_failure_still_writes_table(httpx_mock, tmp_path, monkeypatch):
     add_table(httpx_mock, records_with_attachments())
     httpx_mock.add_response(url=PHOTO_URL, status_code=404)
     httpx_mock.add_response(url=PDF_URL, content=PDF_BYTES)
-    runner = CliRunner()
-    result = runner.invoke(
-        cli.cli,
-        [
-            str(tmp_path),
-            "appZOGvNJPXCQ205F",
-            "tablename",
-            "--key",
-            "x",
-            "--attachments",
-        ],
+    result = invoke(
+        tmp_path,
+        monkeypatch,
+        command("yaml", table="tablename") + ["--attachments"],
     )
     assert result.exit_code == 1
-    table_file = tmp_path / "tablename.yml"
+    table_file = exported(tmp_path, "tablename.yml")
     record_line = result.output.index(
-        "[1/1] tablename - 1 record -> {}".format(table_file)
+        "[1/1] tablename - 1 record -> {}".format(shown("tablename.yml"))
     )
     download_line = result.output.index("[1/1] tablename - downloading 2 attachments")
     photo_line = result.output.index("  [1/2] photo.jpg")
@@ -725,27 +721,23 @@ def test_attachments_download_failure_still_writes_table(httpx_mock, tmp_path):
     summary_line = result.output.index("[1/1] tablename - 1 attachment, 1 failure")
     assert record_line < download_line < photo_line < failure_line < summary_line
     assert "  [2/2] ardata.pdf" in result.output
-    text = (tmp_path / "tablename.yml").read_text(encoding="utf-8")
+    text = table_file.read_text(encoding="utf-8")
     assert PHOTO_URL in text
     assert "tablename/{}".format(saved_name(PHOTO_ID, "photo.jpg")) not in text
     assert "tablename/{}".format(saved_name(PDF_ID, "ardata.pdf")) in text
-    saved_pdf = tmp_path / "tablename" / saved_name(PDF_ID, "ardata.pdf")
+    saved_pdf = exported(tmp_path, "tablename", saved_name(PDF_ID, "ardata.pdf"))
     assert saved_pdf.read_bytes() == PDF_BYTES
-    assert not (tmp_path / "tablename" / saved_name(PHOTO_ID, "photo.jpg")).exists()
-    assert list((tmp_path / "tablename").glob("*.part")) == []
+    assert not exported(tmp_path, "tablename", saved_name(PHOTO_ID, "photo.jpg")).exists()
+    assert list(exported(tmp_path, "tablename").glob("*.part")) == []
 
 
-def test_attachments_not_downloaded_without_flag(httpx_mock, tmp_path):
+def test_attachments_not_downloaded_without_flag(httpx_mock, tmp_path, monkeypatch):
     add_table(httpx_mock, records_with_attachments())
-    runner = CliRunner()
-    result = runner.invoke(
-        cli.cli,
-        [str(tmp_path), "appZOGvNJPXCQ205F", "tablename", "--key", "x"],
-    )
+    result = invoke(tmp_path, monkeypatch, command("yaml", table="tablename"))
     assert result.exit_code == 0, result.output
-    text = (tmp_path / "tablename.yml").read_text(encoding="utf-8")
+    text = exported(tmp_path, "tablename.yml").read_text(encoding="utf-8")
     assert "_saved" not in text
-    assert not (tmp_path / "tablename").exists()
+    assert not exported(tmp_path, "tablename").exists()
 
 
 AIRTABLE_RESPONSE = {
