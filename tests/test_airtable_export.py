@@ -133,7 +133,7 @@ def test_airtable_export(
     result = invoke(
         tmp_path,
         monkeypatch,
-        command(format, key="x") + extra_arguments + ["-v"],
+        command(format, key="x") + extra_arguments,
     )
     assert 0 == result.exit_code, result.output
     assert result.output.strip() == "\n".join(
@@ -159,7 +159,7 @@ def test_all_three_formats_at_once(mock_table, tmp_path, monkeypatch):
     result = invoke(
         tmp_path,
         monkeypatch,
-        command("json,ndjson,yaml", table="tablename") + ["-v"],
+        command("json,ndjson,yaml", table="tablename"),
     )
     assert 0 == result.exit_code, result.output
     written = ", ".join(
@@ -192,7 +192,7 @@ def test_xlsx_export(mock_table, tmp_path, monkeypatch):
     result = invoke(
         tmp_path,
         monkeypatch,
-        command("xlsx", table="tablename") + ["-v"],
+        command("xlsx", table="tablename"),
     )
     assert result.exit_code == 0, result.output
     workbook_path = exported(tmp_path, "appZOGvNJPXCQ205F.xlsx")
@@ -288,8 +288,7 @@ def test_xlsx_one_workbook_for_the_base(httpx_mock, tmp_path, monkeypatch):
     result = invoke(
         tmp_path,
         monkeypatch,
-        command("xlsx", table="{},{},{}".format("People", long_name + "1", long_name + "2"))
-        + ["-v"],
+        command("xlsx", table="{},{},{}".format("People", long_name + "1", long_name + "2")),
     )
     assert result.exit_code == 0, result.output
     workbook_path = exported(tmp_path, "appZOGvNJPXCQ205F.xlsx")
@@ -465,6 +464,33 @@ def test_tables_rejected_when_several_bases(tmp_path, monkeypatch):
     assert not (tmp_path / second).exists()
 
 
+def test_quiet_hides_progress(mock_table, tmp_path, monkeypatch):
+    result = invoke(
+        tmp_path,
+        monkeypatch,
+        command("yaml", table="tablename") + ["--quiet"],
+    )
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == ""
+    assert exported(tmp_path, "tablename.yml").is_file()
+
+
+def test_quiet_still_reports_download_failure(httpx_mock, tmp_path, monkeypatch):
+    add_table(httpx_mock, records_with_attachments())
+    httpx_mock.add_response(url=PHOTO_URL, status_code=404)
+    httpx_mock.add_response(url=PDF_URL, content=PDF_BYTES)
+    result = invoke(
+        tmp_path,
+        monkeypatch,
+        command("yaml", table="tablename") + ["--attachments", "--quiet"],
+    )
+    assert result.exit_code == 1
+    assert "Failed to download photo.jpg" in result.output
+    assert "Exporting" not in result.output
+    assert "downloading" not in result.output
+    assert exported(tmp_path, "tablename.yml").is_file()
+
+
 def test_useragent_is_sent(mock_table, tmp_path, monkeypatch, httpx_mock):
     result = invoke(
         tmp_path,
@@ -508,7 +534,7 @@ def test_airtable_export_error(httpx_mock, tmp_path, monkeypatch):
     result = invoke(
         tmp_path,
         monkeypatch,
-        command("yaml", table="tablename") + ["-v"],
+        command("yaml", table="tablename"),
     )
     assert result.exit_code == 1
     assert "401 Unauthorized" in result.output
@@ -581,7 +607,7 @@ def test_attachments_saved_next_to_table(httpx_mock, format, tmp_path, monkeypat
     result = invoke(
         tmp_path,
         monkeypatch,
-        command(format, table="tablename") + ["--attachments", "-v"],
+        command(format, table="tablename") + ["--attachments"],
     )
     assert result.exit_code == 0, result.output
     photo = exported(tmp_path, "tablename", saved_name(PHOTO_ID, "photo.jpg"))

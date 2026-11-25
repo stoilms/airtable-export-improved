@@ -54,7 +54,12 @@ def split_csv(value):
     type=int,
 )
 @click.option("--useragent", help="User agent to use for requests")
-@click.option("-v", "--verbose", is_flag=True, help="Verbose output")
+@click.option(
+    "-q",
+    "--quiet",
+    is_flag=True,
+    help="Do not print progress",
+)
 @click.option(
     "--schema",
     is_flag=True,
@@ -74,7 +79,7 @@ def cli(
     key,
     http_read_timeout,
     useragent,
-    verbose,
+    quiet,
     schema,
     attachments,
 ):
@@ -109,14 +114,16 @@ def cli(
             "Omit --tables to export every table in each base."
         )
     user_agent = useragent
+
+    def say(message):
+        if not quiet:
+            click.echo(message, err=True)
+
     failed_downloads = 0
     several = len(base_ids) > 1
     for number, base_id in enumerate(base_ids, start=1):
         if several:
-            click.echo(
-                "[{}/{}] base {}".format(number, len(base_ids), base_id),
-                err=True,
-            )
+            say("[{}/{}] base {}".format(number, len(base_ids), base_id))
         failed_downloads += export_base(
             base_id,
             requested_tables,
@@ -130,6 +137,7 @@ def cli(
             yaml,
             xlsx,
             "sqlite" in chosen,
+            say,
         )
     if failed_downloads:
         raise click.ClickException(
@@ -152,6 +160,7 @@ def export_base(
     yaml,
     xlsx,
     use_sqlite,
+    say,
 ):
     "Export one base into a folder named with its base ID. Returns failed downloads."
     tables = list(requested_tables)
@@ -165,11 +174,10 @@ def export_base(
         if not sqlite:
             return
         if batch and not sqlite_state["announced"]:
-            click.echo(
+            say(
                 "[{}/{}] {} - writing to {}".format(
                     index, total, table, relative_path(sqlite)
-                ),
-                err=True,
+                )
             )
             sqlite_state["announced"] = True
         db[table].insert_all(batch, pk="airtable_id", replace=True, alter=True)
@@ -190,10 +198,10 @@ def export_base(
     xlsx_tables = []
     total = len(tables)
     if total:
-        click.echo("Exporting {}".format(count_label(total, "table")), err=True)
+        say("Exporting {}".format(count_label(total, "table")))
     for index, table in enumerate(tables, start=1):
         sqlite_state["announced"] = False
-        click.echo("[{}/{}] {} ...".format(index, total, table), err=True)
+        say("[{}/{}] {} ...".format(index, total, table))
         records = []
         try:
             db_batch = []
@@ -222,28 +230,26 @@ def export_base(
         )
         if destinations:
             line += " -> {}".format(", ".join(destinations))
-        click.echo(line, err=True)
+        say(line)
         if attachments:
             pending = list(iter_attachments(records))
             if pending:
-                click.echo(
+                say(
                     "[{}/{}] {} - downloading {}".format(
                         index,
                         total,
                         table,
                         count_label(len(pending), "attachment"),
-                    ),
-                    err=True,
+                    )
                 )
 
                 def report_attachment(number, attachment, pending_count=len(pending)):
-                    click.echo(
+                    say(
                         "  [{}/{}] {}".format(
                             number,
                             pending_count,
                             attachment.get("filename") or attachment["id"],
-                        ),
-                        err=True,
+                        )
                     )
 
                 saved, failed = save_table_attachments(
@@ -258,15 +264,14 @@ def export_base(
                 if saved:
                     write_table_files(output, table, records, json, ndjson, yaml)
                     if sqlite:
-                        click.echo(
+                        say(
                             "[{}/{}] {} - writing {} to {}".format(
                                 index,
                                 total,
                                 table,
                                 count_label(len(records), "record"),
                                 relative_path(sqlite),
-                            ),
-                            err=True,
+                            )
                         )
                     write_batch(table, records)
                 summary = "[{}/{}] {} - {}".format(
@@ -274,20 +279,19 @@ def export_base(
                 )
                 if failed:
                     summary += ", {}".format(count_label(failed, "failure"))
-                click.echo(summary, err=True)
+                say(summary)
         if xlsx:
             xlsx_tables.append((table, records))
     if xlsx and xlsx_tables:
         workbook_path = output / "{}.xlsx".format(output_name)
         write_base_xlsx(workbook_path, xlsx_tables)
         record_count = sum(len(rows) for _, rows in xlsx_tables)
-        click.echo(
+        say(
             "{} - {}, {}".format(
                 relative_path(workbook_path),
                 count_label(len(xlsx_tables), "table"),
                 count_label(record_count, "record"),
-            ),
-            err=True,
+            )
         )
     return failed_downloads
 

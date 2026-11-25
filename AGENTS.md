@@ -1,6 +1,8 @@
 # AGENTS.md
 
-The project name is airtable-export-improved. The console script is `airtable-export`. Leave the package name, author, and version in `setup.py` unchanged until a change is requested. Leave the PyPI publish workflow unchanged until a publish is requested.
+The project name is airtable-export-improved. The console script is `airtable-export`. Package metadata in `setup.py` points at this repository. The version in progress is `1.0`. There is no PyPI publish workflow.
+
+On each piece of work, remind that `install_requires` and `extras_require` in `setup.py` are pinned and should be checked against current releases. On a release or git tag, set `VERSION` in `setup.py` to that release before the tag is created. Done when the version string matches the tag.
 
 Flag behavior for humans is in `README.md`. A code change that alters a flag updates that file in the same change.
 
@@ -29,7 +31,7 @@ The shell is PowerShell. Chain commands with `;`, not `&&`. Pass a commit messag
 
 Do this only when asked.
 
-1. Commit the intended files. `.env`, `export/`, `app*/`, and a local `database.db` stay untracked.
+1. Commit the intended files. `.env`, `app*/`, and a local `database.db` stay untracked.
 2. Push the branch with `git push -u origin HEAD`.
 3. Open the pull request with `gh pr create --repo stoilms/airtable-export-improved --base main`. Without `--repo`, `gh` targets `upstream`, which is simonw/airtable-export.
 
@@ -43,5 +45,5 @@ The body has three parts: a short control-flow sketch of the change, evidence wi
 - A `--key` on the command line wins. Otherwise read `AIRTABLE_PAT` from `.env` in the working directory, then the `AIRTABLE_KEY` environment variable. Keep that value out of chat, commits, and logs.
 - `--tables` with more than one base raises `UsageError` before any file is created.
 - The record-count line is printed when the table files are first written, before attachment downloads. After a download, rewrite those files and the SQLite rows so `_saved` is included. `_saved` uses forward slashes and is relative to the base folder.
-- `sqlite` writes `{base}/{base}.db`. `xlsx` writes `{base}/{base}.xlsx`. Neither path is a command-line argument. A line is printed before each SQLite write.
+- `sqlite` writes `{base}/{base}.db`. `xlsx` writes `{base}/{base}.xlsx`. Neither path is a command-line argument. A line is printed before each SQLite write. `--quiet` suppresses progress lines. Download errors are still printed.
 - GitHub Actions tests Python 3.11 through 3.15. Keep the matrix on versions that Ubuntu image can install.

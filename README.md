@@ -99,9 +99,18 @@ Timeout, in seconds, for reading from the Airtable API. The default is 5 seconds
 
     airtable-export --bases appXXX --formats yaml --http-read-timeout 60
 
-### `-v`, `--verbose`
+### `-q`, `--quiet`
 
-Accepted. It does not add output. Progress is always printed to stderr, with paths relative to the current directory. The record count is printed when the table files are written, before attachment downloads and before the SQLite file is updated.
+Print nothing while the export runs. Files are still written. Download errors are still printed. Without this flag, progress goes to stderr with paths relative to the current directory. The record count is printed when the table files are written, before attachment downloads and before the SQLite file is updated.
+
+    airtable-export --bases appXXX --formats yaml --quiet
+
+## Known issues / Todos
+
+- With `--http-read-timeout`, record pagination opens an HTTP client and does not close it.
+- Listing tables does not check the HTTP status. A rejected schema request fails later, when the response has no `tables` key.
+- A SQLite export whose record count is a multiple of 100 sends one extra empty insert after the last full batch.
+- Airtable allows about 5 requests per second per base. The tool waits 0.2 seconds only between pages of the same table. It does not wait between tables, and it does not retry a `429` response.
 
 ## Running this using GitHub Actions
 
