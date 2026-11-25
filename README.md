@@ -26,7 +26,34 @@ You can export all of your data to a folder called `export/` by running the foll
 
     airtable-export export base_id --key=key
 
-This example would files for each of your tables, for example: `export/table1.yml` and `export/table2.yml`.
+This example writes a file for each of your tables, for example: `export/table1.yml` and `export/table2.yml`. While it runs, progress is printed to stderr. The record line appears as soon as that table's files are written:
+
+    Exporting 2 tables
+    [1/2] table1 ...
+    [1/2] table1 - 18 records -> export/table1.yml
+    [2/2] table2 ...
+    [2/2] table2 - 5 records -> export/table2.yml
+
+With `--attachments`, downloads are listed after that record line:
+
+    [1/2] table1 - 18 records -> export/table1.yml
+    [1/2] table1 - downloading 3 attachments
+      [1/3] photo.jpg
+      [2/3] notes.pdf
+      [3/3] scan.png
+    [1/2] table1 - 3 attachments
+
+A failed download is printed under its filename. The last line then includes the failure count, for example `1 attachment, 1 failure`.
+
+With `--sqlite database.db`, a line is printed before the database is written, and the database path is included on the record line. After attachments are saved, those records are written again:
+
+    [1/2] table1 - writing to database.db
+    [1/2] table1 - 18 records -> export/table1.yml, database.db
+    [1/2] table1 - writing 18 records to database.db
+
+With `--xlsx`, the workbook is written after every table and reported on its own line:
+
+    export/base_id.xlsx - 2 tables, 23 records
 
 Rather than passing the API key using the `--key` option you can set it as an environment variable called `AIRTABLE_KEY`. If you omit `--key`, the tool reads `AIRTABLE_PAT` from a `.env` file in the current directory. Copy `.env.example` to `.env` and paste your token there.
 

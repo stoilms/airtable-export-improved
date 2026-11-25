@@ -121,7 +121,13 @@ def test_airtable_export(
         args,
     )
     assert 0 == result.exit_code, result.output
-    assert "Wrote 2 records to {}".format(table_file) == result.output.strip()
+    assert result.output.strip() == "\n".join(
+        [
+            "Exporting 1 table",
+            "[1/1] tablename ...",
+            "[1/1] tablename - 2 records -> {}".format(table_file),
+        ]
+    )
     actual = table_file.read_text(encoding="utf-8")
     assert expected.strip() == actual.strip()
     schema = tmp_path / "_schema.json"
@@ -154,7 +160,13 @@ def test_all_three_formats_at_once(mock_table, tmp_path):
         str(tmp_path / name)
         for name in ("tablename.json", "tablename.ndjson", "tablename.yml")
     )
-    assert "Wrote 2 records to {}".format(written) == result.output.strip()
+    assert result.output.strip() == "\n".join(
+        [
+            "Exporting 1 table",
+            "[1/1] tablename ...",
+            "[1/1] tablename - 2 records -> {}".format(written),
+        ]
+    )
     for format, expected in FORMATS:
         actual = (
             tmp_path / "tablename.{}".format("yml" if format == "yaml" else format)
@@ -186,9 +198,13 @@ def test_xlsx_export(mock_table, tmp_path):
     )
     assert result.exit_code == 0, result.output
     workbook_path = tmp_path / "appZOGvNJPXCQ205F.xlsx"
-    assert (
-        "Wrote 2 records from 1 table to {}".format(workbook_path)
-        == result.output.strip()
+    assert result.output.strip() == "\n".join(
+        [
+            "Exporting 1 table",
+            "[1/1] tablename ...",
+            "[1/1] tablename - 2 records",
+            "{} - 1 table, 2 records".format(workbook_path),
+        ]
     )
     assert not (tmp_path / "tablename.yml").exists()
     sheets = workbook_sheets(workbook_path)
@@ -297,7 +313,8 @@ def test_xlsx_one_workbook_for_the_base(httpx_mock, tmp_path):
     sheets = workbook_sheets(workbook_path)
     assert list(sheets) == ["People", "A" * 31, ("A" * 29) + "_2"]
     assert sheets["People"][1][sheets["People"][0].index("Name")] == "Ada"
-    assert "Wrote 1 record from 3 tables to {}".format(workbook_path) in result.output
+    assert "[1/3] People - 1 record" in result.output
+    assert "{} - 3 tables, 1 record".format(workbook_path) in result.output
 
 
 def test_xlsx_includes_saved_attachment_path(httpx_mock, tmp_path):
@@ -340,6 +357,14 @@ def test_airtable_sqlite(mock_table, tmp_path):
     ]
     result = runner.invoke(cli.cli, args, catch_exceptions=False)
     assert 0 == result.exit_code, result.output
+    assert result.output.strip() == "\n".join(
+        [
+            "Exporting 1 table",
+            "[1/1] tablename ...",
+            "[1/1] tablename - writing to {}".format(db_path),
+            "[1/1] tablename - 2 records -> {}".format(db_path),
+        ]
+    )
     db = sqlite_utils.Database(db_path)
     assert db.table_names() == ["tablename"]
     assert list(db["tablename"].rows) == [
@@ -544,7 +569,12 @@ def test_attachments_saved_next_to_table(httpx_mock, format, tmp_path):
     assert "tablename/{}".format(saved_name(PDF_ID, "ardata.pdf")) in text
     assert PHOTO_URL in text
     assert THUMB_URL in text
-    assert "Saved 2 attachments to {}".format(tmp_path / "tablename") in result.output
+    record_line = result.output.index("[1/1] tablename - 1 record ->")
+    download_line = result.output.index("[1/1] tablename - downloading 2 attachments")
+    assert record_line < download_line
+    assert "  [1/2] photo.jpg" in result.output
+    assert "  [2/2] ardata.pdf" in result.output
+    assert "[1/1] tablename - 2 attachments" in result.output
     for request in httpx_mock.get_requests():
         if request.url.host == "example.test":
             assert "authorization" not in request.headers
@@ -569,6 +599,15 @@ def test_attachments_sqlite(httpx_mock, tmp_path):
         ],
     )
     assert result.exit_code == 0, result.output
+    record_line = result.output.index(
+        "[1/1] tablename - 1 record -> {}".format(db_path)
+    )
+    download_line = result.output.index("[1/1] tablename - downloading 2 attachments")
+    rewrite_line = result.output.index(
+        "[1/1] tablename - writing 1 record to {}".format(db_path)
+    )
+    assert result.output.index("[1/1] tablename - writing to {}".format(db_path)) < record_line
+    assert record_line < download_line < rewrite_line
     photo = tmp_path / "tablename" / saved_name(PHOTO_ID, "photo.jpg")
     assert photo.read_bytes() == PHOTO_BYTES
     db = sqlite_utils.Database(db_path)
@@ -676,7 +715,16 @@ def test_attachments_download_failure_still_writes_table(httpx_mock, tmp_path):
         ],
     )
     assert result.exit_code == 1
-    assert "Failed to download photo.jpg" in result.output
+    table_file = tmp_path / "tablename.yml"
+    record_line = result.output.index(
+        "[1/1] tablename - 1 record -> {}".format(table_file)
+    )
+    download_line = result.output.index("[1/1] tablename - downloading 2 attachments")
+    photo_line = result.output.index("  [1/2] photo.jpg")
+    failure_line = result.output.index("Failed to download photo.jpg")
+    summary_line = result.output.index("[1/1] tablename - 1 attachment, 1 failure")
+    assert record_line < download_line < photo_line < failure_line < summary_line
+    assert "  [2/2] ardata.pdf" in result.output
     text = (tmp_path / "tablename.yml").read_text(encoding="utf-8")
     assert PHOTO_URL in text
     assert "tablename/{}".format(saved_name(PHOTO_ID, "photo.jpg")) not in text
