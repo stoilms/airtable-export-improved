@@ -4,6 +4,7 @@ import json
 import pathlib
 import pytest
 import sqlite_utils
+from openpyxl import load_workbook
 from urllib.parse import quote
 
 FORMATS = [
@@ -159,6 +160,170 @@ def test_all_three_formats_at_once(mock_table, tmp_path):
             tmp_path / "tablename.{}".format("yml" if format == "yaml" else format)
         ).read_text(encoding="utf-8")
         assert expected.strip() == actual.strip()
+
+
+def workbook_sheets(path):
+    workbook = load_workbook(path)
+    return {
+        worksheet.title: list(worksheet.iter_rows(values_only=True))
+        for worksheet in workbook.worksheets
+    }
+
+
+def test_xlsx_export(mock_table, tmp_path):
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            str(tmp_path),
+            "appZOGvNJPXCQ205F",
+            "tablename",
+            "--key",
+            "x",
+            "--xlsx",
+            "-v",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    workbook_path = tmp_path / "appZOGvNJPXCQ205F.xlsx"
+    assert (
+        "Wrote 2 records from 1 table to {}".format(workbook_path)
+        == result.output.strip()
+    )
+    assert not (tmp_path / "tablename.yml").exists()
+    sheets = workbook_sheets(workbook_path)
+    assert list(sheets) == ["tablename"]
+    rows = sheets["tablename"]
+    headers = rows[0]
+    assert headers[0] == "airtable_id"
+    assert headers[-1] == "airtable_createdTime"
+    assert "name" in headers
+    assert "weird name: what is this?" in headers
+    by_id = {row[0]: dict(zip(headers, row)) for row in rows[1:]}
+    assert by_id["rec1"]["name"] == "This is the name"
+    assert by_id["rec1"]["address"] == "Address line 1\nAddress line 2"
+    assert by_id["rec1"]["true_or_false"] is True
+    assert by_id["rec1"]["size"] == 441
+    assert by_id["rec2"]["true_or_false"] is False
+
+
+def test_xlsx_plain_lists_and_cyrillic(httpx_mock, tmp_path):
+    table = "Backlog: Теми"
+    httpx_mock.add_response(
+        url="https://api.airtable.com/v0/appZOGvNJPXCQ205F/{}".format(
+            quote(table, safe="")
+        ),
+        json={
+            "records": [
+                {
+                    "id": "rec1",
+                    "fields": {
+                        "Тема": "Анализ",
+                        "Tags": ["едно", "две"],
+                        "Photos": [
+                            {
+                                "id": "attwPzAABrX7mUpdl",
+                                "url": "https://example.test/photo.jpg",
+                                "filename": "снимка.jpg",
+                            }
+                        ],
+                    },
+                    "createdTime": "2020-04-18T18:50:27.000Z",
+                }
+            ]
+        },
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [str(tmp_path), "appZOGvNJPXCQ205F", table, "--key", "x", "--xlsx"],
+    )
+    assert result.exit_code == 0, result.output
+    sheets = workbook_sheets(tmp_path / "appZOGvNJPXCQ205F.xlsx")
+    assert list(sheets) == ["Backlog_ Теми"]
+    rows = sheets["Backlog_ Теми"]
+    record = dict(zip(rows[0], rows[1]))
+    assert record["Тема"] == "Анализ"
+    assert record["Tags"] == "едно, две"
+    photos = json.loads(record["Photos"])
+    assert photos[0]["filename"] == "снимка.jpg"
+
+
+def test_xlsx_one_workbook_for_the_base(httpx_mock, tmp_path):
+    long_name = "A" * 31
+    httpx_mock.add_response(
+        url="https://api.airtable.com/v0/appZOGvNJPXCQ205F/People",
+        json={
+            "records": [
+                {
+                    "id": "rec1",
+                    "fields": {"Name": "Ada"},
+                    "createdTime": "2020-04-18T18:50:27.000Z",
+                }
+            ]
+        },
+    )
+    httpx_mock.add_response(
+        url="https://api.airtable.com/v0/appZOGvNJPXCQ205F/{}".format(
+            quote(long_name + "1", safe="")
+        ),
+        json={"records": []},
+    )
+    httpx_mock.add_response(
+        url="https://api.airtable.com/v0/appZOGvNJPXCQ205F/{}".format(
+            quote(long_name + "2", safe="")
+        ),
+        json={"records": []},
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            str(tmp_path),
+            "appZOGvNJPXCQ205F",
+            "People",
+            long_name + "1",
+            long_name + "2",
+            "--key",
+            "x",
+            "--xlsx",
+            "-v",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    workbook_path = tmp_path / "appZOGvNJPXCQ205F.xlsx"
+    assert workbook_path.exists()
+    assert not (tmp_path / "People.xlsx").exists()
+    sheets = workbook_sheets(workbook_path)
+    assert list(sheets) == ["People", "A" * 31, ("A" * 29) + "_2"]
+    assert sheets["People"][1][sheets["People"][0].index("Name")] == "Ada"
+    assert "Wrote 1 record from 3 tables to {}".format(workbook_path) in result.output
+
+
+def test_xlsx_includes_saved_attachment_path(httpx_mock, tmp_path):
+    add_table(httpx_mock, records_with_attachments())
+    add_files(httpx_mock)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.cli,
+        [
+            str(tmp_path),
+            "appZOGvNJPXCQ205F",
+            "tablename",
+            "--key",
+            "x",
+            "--xlsx",
+            "--attachments",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    sheets = workbook_sheets(tmp_path / "appZOGvNJPXCQ205F.xlsx")
+    rows = sheets["tablename"]
+    record = dict(zip(rows[0], rows[1]))
+    photos = json.loads(record["Photos"])
+    assert photos[0]["_saved"] == "tablename/{}".format(
+        saved_name(PHOTO_ID, "photo.jpg")
+    )
 
 
 def test_airtable_sqlite(mock_table, tmp_path):

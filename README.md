@@ -47,6 +47,12 @@ You can pass multiple format options at once. This command will create a `.json`
     airtable-export export base_id \
         --key=key --ndjson --yaml --json
 
+You can export the whole base as one Excel workbook with `--xlsx`:
+
+    airtable-export export base_id --key=key --xlsx
+
+This writes `export/base_id.xlsx`. Each table is a sheet, named from the table and shortened to Excel's 31-character limit. `airtable_id` is the first column and `airtable_createdTime` is the last. Lists of plain values, such as linked records or multiple select options, are joined with commas. Nested values, including attachments, are stored as JSON text. Cyrillic and other non-ASCII text is written as characters.
+
 If you import all tables, or if you add the `--schema` option, a JSON schema for the base will be written to `output-dir/_schema.json`.
 
 ### Attachments
@@ -57,7 +63,7 @@ Airtable stores images in attachment fields. The download URLs for those files e
 
 For a table called `People` this writes `export/People.yml` and a folder `export/People/`. Each file is named `{attachment id}-original-{filename}`, for example `export/People/attwPzAABrX7mUpdl-original-photo.jpg`. Characters that are not allowed in Windows filenames are replaced with `_`.
 
-The exported YAML, JSON, NDJSON, and SQLite keep the Airtable `url` and add `_saved` with that path relative to the output directory, using forward slashes:
+The exported YAML, JSON, NDJSON, Excel, and SQLite keep the Airtable `url` and add `_saved` with that path relative to the output directory, using forward slashes:
 
     _saved: People/attwPzAABrX7mUpdl-original-photo.jpg
 
