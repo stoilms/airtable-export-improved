@@ -98,12 +98,21 @@ def cli(
     output.mkdir(parents=True, exist_ok=True)
     if not json and not ndjson and not yaml and not sqlite and not xlsx:
         yaml = True
-    write_batch = lambda table, batch: None
+    sqlite_state = {"announced": False}
+
+    def write_batch(table, batch):
+        if not sqlite:
+            return
+        if batch and not sqlite_state["announced"]:
+            click.echo(
+                "[{}/{}] {} - writing to {}".format(index, total, table, sqlite),
+                err=True,
+            )
+            sqlite_state["announced"] = True
+        db[table].insert_all(batch, pk="airtable_id", replace=True, alter=True)
+
     if sqlite:
         db = sqlite_utils.Database(sqlite)
-        write_batch = lambda table, batch: db[table].insert_all(
-            batch, pk="airtable_id", replace=True, alter=True
-        )
     if not tables or schema:
         # Fetch all tables
         schema_data = list_tables(base_id, key, user_agent=user_agent)
@@ -116,7 +125,12 @@ def cli(
 
     failed_downloads = 0
     xlsx_tables = []
-    for table in tables:
+    total = len(tables)
+    if total:
+        click.echo("Exporting {}".format(count_label(total, "table")), err=True)
+    for index, table in enumerate(tables, start=1):
+        sqlite_state["announced"] = False
+        click.echo("[{}/{}] {} ...".format(index, total, table), err=True)
         records = []
         try:
             db_batch = []
@@ -137,59 +151,91 @@ def cli(
             raise click.ClickException(exc)
         write_batch(table, db_batch)
         filenames = write_table_files(output, table, records, json, ndjson, yaml)
-        if verbose and filenames:
-            click.echo(
-                "Wrote {} record{} to {}".format(
-                    len(records),
-                    "" if len(records) == 1 else "s",
-                    ", ".join(map(str, filenames)),
-                ),
-                err=True,
-            )
+        destinations = [str(filename) for filename in filenames]
+        if sqlite:
+            destinations.append(str(sqlite))
+        line = "[{}/{}] {} - {}".format(
+            index, total, table, count_label(len(records), "record")
+        )
+        if destinations:
+            line += " -> {}".format(", ".join(destinations))
+        click.echo(line, err=True)
         if attachments:
-            saved, failed = save_table_attachments(
-                output,
-                table,
-                records,
-                http_read_timeout,
-                user_agent=user_agent,
-            )
-            failed_downloads += failed
-            if saved:
-                write_table_files(output, table, records, json, ndjson, yaml)
-                write_batch(table, records)
-                if verbose:
+            pending = list(iter_attachments(records))
+            if pending:
+                click.echo(
+                    "[{}/{}] {} - downloading {}".format(
+                        index,
+                        total,
+                        table,
+                        count_label(len(pending), "attachment"),
+                    ),
+                    err=True,
+                )
+
+                def report_attachment(number, attachment, pending_count=len(pending)):
                     click.echo(
-                        "Saved {} attachment{} to {}".format(
-                            saved,
-                            "" if saved == 1 else "s",
-                            output / filesystem_name(table),
+                        "  [{}/{}] {}".format(
+                            number,
+                            pending_count,
+                            attachment.get("filename") or attachment["id"],
                         ),
                         err=True,
                     )
+
+                saved, failed = save_table_attachments(
+                    output,
+                    table,
+                    records,
+                    http_read_timeout,
+                    user_agent=user_agent,
+                    on_file=report_attachment,
+                )
+                failed_downloads += failed
+                if saved:
+                    write_table_files(output, table, records, json, ndjson, yaml)
+                    if sqlite:
+                        click.echo(
+                            "[{}/{}] {} - writing {} to {}".format(
+                                index,
+                                total,
+                                table,
+                                count_label(len(records), "record"),
+                                sqlite,
+                            ),
+                            err=True,
+                        )
+                    write_batch(table, records)
+                summary = "[{}/{}] {} - {}".format(
+                    index, total, table, count_label(saved, "attachment")
+                )
+                if failed:
+                    summary += ", {}".format(count_label(failed, "failure"))
+                click.echo(summary, err=True)
         if xlsx:
             xlsx_tables.append((table, records))
     if xlsx and xlsx_tables:
         workbook_path = output / "{}.xlsx".format(base_id)
         write_base_xlsx(workbook_path, xlsx_tables)
-        if verbose:
-            record_count = sum(len(rows) for _, rows in xlsx_tables)
-            click.echo(
-                "Wrote {} record{} from {} table{} to {}".format(
-                    record_count,
-                    "" if record_count == 1 else "s",
-                    len(xlsx_tables),
-                    "" if len(xlsx_tables) == 1 else "s",
-                    workbook_path,
-                ),
-                err=True,
-            )
+        record_count = sum(len(rows) for _, rows in xlsx_tables)
+        click.echo(
+            "{} - {}, {}".format(
+                workbook_path,
+                count_label(len(xlsx_tables), "table"),
+                count_label(record_count, "record"),
+            ),
+            err=True,
+        )
     if failed_downloads:
         raise click.ClickException(
             "Failed to download {} attachment{}".format(
                 failed_downloads, "" if failed_downloads == 1 else "s"
             )
         )
+
+
+def count_label(count, singular):
+    return "{} {}{}".format(count, singular, "" if count == 1 else "s")
 
 
 def read_dotenv_value(path, name):
@@ -379,7 +425,9 @@ def attachment_already_saved(dest, attachment):
     return type(size) is int and dest.is_file() and dest.stat().st_size == size
 
 
-def save_table_attachments(output, table, records, http_read_timeout, user_agent=None):
+def save_table_attachments(
+    output, table, records, http_read_timeout, user_agent=None, on_file=None
+):
     "Download original files for one table. Returns (saved_count, failed_count)."
     pending = list(iter_attachments(records))
     if not pending:
@@ -396,7 +444,9 @@ def save_table_attachments(output, table, records, http_read_timeout, user_agent
     with httpx.Client(
         timeout=timeout, headers=headers, follow_redirects=True
     ) as client:
-        for attachment in pending:
+        for number, attachment in enumerate(pending, start=1):
+            if on_file is not None:
+                on_file(number, attachment)
             dest_name = attachment_filename(attachment)
             dest = folder / dest_name
             if attachment_already_saved(dest, attachment):
