@@ -20,10 +20,10 @@ Done when `git status` shows the new branch and a clean tree before the edit.
 
 1. Edit `airtable_export/cli.py` for behavior. Keep the existing helpers: `filesystem_name` for on-disk names, `relative_path` for progress lines, `split_csv` for `--bases`, `--formats`, and `--tables`.
 2. Update `tests/test_airtable_export.py`. Invoke the CLI through `command()` and `invoke()`, which chdir into `tmp_path`. Assert file contents with `exported()` and progress text with `shown()`.
-3. Update the matching flag section in `README.md`.
+3. Update `README.md` in the same change. A flag change updates that flag's section. A user-visible difference from simonw/airtable-export is added, removed, or rewritten in `## Changes from the original`. Put the improvement a reader would notice first at the top. A new capability gets its own bullet of one or two sentences that states the outcome and the delta from upstream, as in "The Airtable token can now be read from a `.env` file." A change to flags, paths, or argument shape stays the one bullet "Commands and arguments cleanup." Usage keeps the flag names, path templates, and which progress lines print.
 4. Run the suite with the repo virtual environment: `.venv\Scripts\python.exe -m pytest` on Windows.
 
-Done when `pytest` passes and every command shown in the README is one the code accepts.
+Done when `pytest` passes, every command shown in the README is one the code accepts, and each `## Changes from the original` bullet still matches that shape, is true of this repository, and is not how upstream works.
 
 The shell is PowerShell. Chain commands with `;`, not `&&`. Pass a commit message with a here-string, and a pull request body with `gh pr create --body-file`.
 

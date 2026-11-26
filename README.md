@@ -4,7 +4,19 @@
 [![Tests](https://github.com/stoilms/airtable-export-improved/workflows/Test/badge.svg)](https://github.com/stoilms/airtable-export-improved/actions?query=workflow%3ATest)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/stoilms/airtable-export-improved/blob/main/LICENSE)
 
-Export Airtable data to files on disk.
+Export your Airtable data to a variety of different formats. You own your data. 
+
+This is my fork of the [airtable-export](https://github.com/simonw/airtable-export) project by Simon Willison, with improvements made.
+
+## Changes from the original
+
+- `--attachments` saves original files beside each table, records the saved path, and skips a file already on disk at the same size.
+- Excel (`.xlsx`) is added as an export format: one workbook per base, one sheet per table.
+- Commands and arguments cleanup.
+- Several bases can be exported in one command. Each base is written to its own folder, named with the base ID, instead of a folder you choose.
+- The Airtable token can now be read from a `.env` file.
+- Export progress is printed. `--quiet` hides that progress.
+- Names that Windows cannot store are sanitized, and non-ASCII text is written as Unicode characters.
 
 ## Installation
 
@@ -195,3 +207,9 @@ Then:
 
     pip install -e ".[test]"
     pytest
+
+## License / Attribution
+
+airtable-export-improved is a derivative of [simonw/airtable-export](https://github.com/simonw/airtable-export) by Simon Willison. The original work and these changes are both under the [Apache License, Version 2.0](LICENSE).
+
+Thanks to Simon Willison for creating the upstream project. He has not created or contributed to this fork.
